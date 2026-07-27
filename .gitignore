@@ -1,0 +1,24 @@
+.claude
+
+# Binarios compilados
+gator
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output de tests
+*.test
+*.out
+
+# Logs
+*.log
+
+# Archivos de entorno
+.env
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
