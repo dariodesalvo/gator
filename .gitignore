@@ -1,4 +1,6 @@
 .claude
+.gatorconfig.json
+.gator.code-workspace
 
 # Binarios compilados
 gator
