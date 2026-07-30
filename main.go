@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"gator/internal/config"
@@ -52,6 +54,30 @@ func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) 
 	}
 }
 
+func parsePublishedAt(pubDate string) sql.NullTime {
+	if pubDate == "" {
+		return sql.NullTime{Valid: false}
+	}
+
+	formats := []string{
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, pubDate); err == nil {
+			return sql.NullTime{Time: t.UTC(), Valid: true}
+		}
+	}
+
+	return sql.NullTime{Valid: false}
+}
+
 func scrapeFeeds(s *state) error {
 	feed, err := s.db.GetNextFeedToFetch(context.Background())
 	if err != nil {
@@ -74,9 +100,64 @@ func scrapeFeeds(s *state) error {
 
 	fmt.Printf("--- Fetching: %s (%s) ---\n", feed.Name, feed.Url)
 	for _, item := range rssFeed.Channel.Item {
-		fmt.Printf(" * %s\n", item.Title)
+		pubTime := parsePublishedAt(item.PubDate)
+
+		description := sql.NullString{
+			String: item.Description,
+			Valid:  item.Description != "",
+		}
+
+		_, err := s.db.CreatePost(context.Background(), database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+			Title:       item.Title,
+			Url:         item.Link,
+			Description: description,
+			PublishedAt: pubTime,
+			FeedID:      feed.ID,
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "duplicate key") {
+				continue
+			}
+			fmt.Printf("could not save post %s: %v\n", item.Title, err)
+		}
 	}
-	fmt.Println()
+
+	return nil
+}
+
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	limit := int32(2)
+	if len(cmd.args) > 0 {
+		parsedLimit, err := strconv.Atoi(cmd.args[0])
+		if err == nil && parsedLimit > 0 {
+			limit = int32(parsedLimit)
+		}
+	}
+
+	posts, err := s.db.GetPostsForUser(context.Background(), database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  limit,
+	})
+	if err != nil {
+		return fmt.Errorf("could not get posts for user: %w", err)
+	}
+
+	fmt.Printf("Found %d posts for user %s:\n\n", len(posts), user.Name)
+	for _, post := range posts {
+		fmt.Printf("Title: %s\n", post.Title)
+		fmt.Printf("Feed:  %s\n", post.FeedName)
+		fmt.Printf("URL:   %s\n", post.Url)
+		if post.PublishedAt.Valid {
+			fmt.Printf("Date:  %s\n", post.PublishedAt.Time.Format("2006-01-02 15:04:05"))
+		}
+		if post.Description.Valid {
+			fmt.Printf("Desc:  %s\n", post.Description.String)
+		}
+		fmt.Println(strings.Repeat("-", 40))
+	}
 
 	return nil
 }
@@ -329,6 +410,7 @@ func main() {
 	cmds.register("follow", middlewareLoggedIn(handlerFollow))
 	cmds.register("unfollow", middlewareLoggedIn(handlerUnfollow))
 	cmds.register("following", middlewareLoggedIn(handlerFollowing))
+	cmds.register("browse", middlewareLoggedIn(handlerBrowse))
 
 	if len(os.Args) < 2 {
 		log.Fatal("not enough arguments provided")
